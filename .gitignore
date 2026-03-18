@@ -1,5 +1,6 @@
-# Pre-commit blocklist — contains actual wallet/IP patterns
+# Pre-commit blocklist and gitleaks config — contain actual wallet/IP patterns
 .githooks/.blocklist
+.gitleaks.toml
 
 node_modules/
 db/*.db
