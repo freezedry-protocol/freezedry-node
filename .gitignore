@@ -12,6 +12,9 @@ blobs/
 .env*.local
 *.log
 *-keypair.json
+*.pem
+secrets/
+credentials.*
 keys/
 
 # OS junk
