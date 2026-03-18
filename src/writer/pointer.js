@@ -4,7 +4,7 @@
  *
  * v2: Pointer memo sent TO the Config PDA so it appears in Config PDA TX history.
  * This makes all inscriptions discoverable by scanning a single on-chain address.
- * Historical pointers on authority wallet (BbEy...) remain permanent and valid.
+ * Historical pointers on the original authority wallet remain permanent and valid.
  */
 
 import {

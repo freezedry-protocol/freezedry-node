@@ -646,9 +646,9 @@ app.get('/repair', async (req, reply) => {
   };
 });
 
-// ─── Direct blob upload (browser → GCP, zero Vercel) ───
+// ─── Direct blob upload (browser → node, zero coordinator) ───
 // Browser PUTs raw binary blob directly. SHA-256 verified, rate limited.
-// GCP node stores it locally so the claimer has zero-fetch when the job lands.
+// Node stores it locally so the claimer has zero-fetch when the job lands.
 
 const UPLOAD_RATE_WINDOW = 3600_000; // 1 hour
 const UPLOAD_RATE_MAX = 20;          // 20 uploads/hour per IP
