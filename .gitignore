@@ -1,0 +1,33 @@
+# Pre-commit blocklist — contains actual wallet/IP patterns
+.githooks/.blocklist
+
+node_modules/
+db/*.db
+db/*.db-wal
+db/*.db-shm
+blobs/
+.env
+.env.*
+.env.local
+.env*.local
+*.log
+*-keypair.json
+keys/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Admin scripts — use env vars, not safe to share
+update-config.mjs
+
+# Deploy/ops — SSH creds, server hostnames
+deploy.sh
+STATUS.md
+
+# CLAUDE files — private project context
+CLAUDE.md
+**/CLAUDE.md
+
+# Editor state
+**/.obsidian/

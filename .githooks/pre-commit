@@ -1,0 +1,40 @@
+#!/bin/bash
+# Pre-commit hook: block sensitive strings from being committed to public repos
+# Install: git config core.hooksPath .githooks
+# Patterns live in .githooks/.blocklist (gitignored — never committed)
+
+RED='\033[0;31m'
+NC='\033[0m'
+
+BLOCKLIST="$(dirname "$0")/.blocklist"
+if [ ! -f "$BLOCKLIST" ]; then
+  echo -e "${RED}WARNING: .githooks/.blocklist not found — secret guard disabled${NC}"
+  echo -e "${RED}Create it with one regex pattern per line${NC}"
+  exit 0
+fi
+
+FOUND=0
+
+while IFS= read -r pattern || [ -n "$pattern" ]; do
+  [ -z "$pattern" ] && continue
+  [[ "$pattern" =~ ^# ]] && continue
+  MATCHES=$(git diff --cached --diff-filter=ACMR -U0 -- ':!.githooks/pre-commit' | grep -E "^\+" | grep -v "^+++" | grep -iE "$pattern" 2>/dev/null)
+  if [ -n "$MATCHES" ]; then
+    if [ $FOUND -eq 0 ]; then
+      echo -e "${RED}BLOCKED: Sensitive strings detected in staged changes${NC}"
+      echo ""
+    fi
+    echo -e "${RED}  Pattern: ${pattern}${NC}"
+    echo "$MATCHES" | head -3 | sed 's/^/    /'
+    echo ""
+    FOUND=1
+  fi
+done < "$BLOCKLIST"
+
+if [ $FOUND -eq 1 ]; then
+  echo -e "${RED}Fix: Replace with placeholders ([your-wallet], node.example.com, etc.)${NC}"
+  echo -e "${RED}Override: git commit --no-verify (use only if you're sure)${NC}"
+  exit 1
+fi
+
+exit 0
