@@ -158,7 +158,7 @@ async function fetchBlob(job) {
           return buf;
         }
       }
-    } catch (_) { /* blobSource unavailable */ }
+    } catch (err) { console.warn('[Attester] blobSource fetch failed:', err.message); }
   }
 
   // 2. Local cache
@@ -183,7 +183,7 @@ async function fetchBlob(job) {
           return buf;
         }
       }
-    } catch (_) { /* peer unavailable — try next */ }
+    } catch (err) { console.warn('[Attester] peer fetch failed:', err.message); }
   }
 
   // 4. CDN R2 (may have expired after 2 days)
@@ -200,7 +200,7 @@ async function fetchBlob(job) {
         return buf;
       }
     }
-  } catch (_) { /* CDN unavailable */ }
+  } catch (err) { console.warn('[Attester] CDN fetch failed:', err.message); }
 
   // 5. Coordinator serve-job-blob
   const coordinatorUrl = env('COORDINATOR_URL') || 'https://freezedry.art';
@@ -385,7 +385,8 @@ async function spotCheckOnChain(job, blob) {
       try {
         const decoded = Buffer.from(rest.slice(nextColon + 1), 'base64');
         foundChunks.set(idx, decoded);
-      } catch (_) {
+      } catch (err) {
+        console.warn('[Attester] base64 decode failed for chunk', idx, err.message);
         foundChunks.set(idx, null);
       }
     }
@@ -665,7 +666,7 @@ async function pollAndAttest() {
           // then close the completed job PDA itself
           try {
             await tryCloseAttestation(job);
-          } catch (_) { /* non-fatal — admin can clean up orphaned attestations */ }
+          } catch (err) { console.warn('[Attester] closeAttestation cleanup failed:', err.message); }
           try {
             await tryCloseCompletedJob(job);
           } catch (closeErr) {

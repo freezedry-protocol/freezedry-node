@@ -8,6 +8,7 @@
  * /health extended with writer fields
  */
 
+import { timingSafeEqual } from 'crypto';
 import {
   env, MEMO_PAYLOAD_SIZE, BASE_CHUNK_COST_LAMPORTS, PARTNER_MARGIN_MULTIPLIER,
   INSCRIPTION_MODE, DIRECT_PRICE_PER_MB_USD, DIRECT_MIN_PRICE_USD,
@@ -36,14 +37,15 @@ function drainQueue() {
   }
 }
 
-/** Validate X-API-Key header */
+/** Validate X-API-Key header (timing-safe) */
 function requireApiKey(req, reply) {
   if (!API_KEY) {
     reply.status(503);
     return { error: 'Writer API_KEY not configured' };
   }
-  const provided = req.headers['x-api-key'] || '';
-  if (provided !== API_KEY) {
+  const expectedBuf = Buffer.from(API_KEY);
+  const providedBuf = Buffer.from(req.headers['x-api-key'] || '');
+  if (expectedBuf.length !== providedBuf.length || !timingSafeEqual(expectedBuf, providedBuf)) {
     reply.status(401);
     return { error: 'Invalid API key' };
   }
