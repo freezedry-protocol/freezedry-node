@@ -45,14 +45,14 @@ export const MEMO_PAYLOAD_SIZE = MEMO_CHUNK_SIZE - V3_HEADER_SIZE; // 585B
 export const TX_BASE_FEE = 5_000;
 
 // SEND_CONCURRENCY: TXs sent in parallel per worker per batch.
-// Default 6: with 4 workers = 24 sends/cycle ≈ 32 RPS (safe on Dev 50 RPS).
-// To increase total TPS, add more WORKERS instead.
-export const SEND_CONCURRENCY = safeInt(process.env.SEND_CONCURRENCY, 6);
+// Default 8: empirically tested (2026-03-18) — 4.83 TPS, 99% clean, 1 429/100 chunks.
+// Helius Dev sendTx limit = 5/sec. c=8 d=200ms rides just under with minimal 429s.
+export const SEND_CONCURRENCY = safeInt(process.env.SEND_CONCURRENCY, 8);
 
 // BATCH_DELAY_MS: Pause between batches. Controls RPS per worker.
-// 12 sends / 400ms = 30 RPS per worker. Lower = faster but more RPS.
-// Only lower this if your RPC tier supports the resulting RPS.
-export const BATCH_DELAY_MS = safeInt(process.env.BATCH_DELAY_MS, 400);
+// Default 200ms: empirically tested (2026-03-18) — best balance of speed vs clean sends.
+// 400ms was previous default (too conservative). 50ms causes heavy 429s on Helius Dev.
+export const BATCH_DELAY_MS = safeInt(process.env.BATCH_DELAY_MS, 200);
 
 // ── Confirm-per-batch settings ──────────────────────────────────────────
 export const CONFIRM_WAIT_MS = safeInt(process.env.CONFIRM_WAIT_MS, 2500);
@@ -87,7 +87,7 @@ export const MULTI_JOB_CONCURRENCY = safeInt(process.env.MULTI_JOB_CONCURRENCY, 
 // │ Business $499│ auto→10 │ ~125 TPS, DeGods in 18s, José in 3.7 min │
 // │ Pro $999     │ auto→25 │ ~310 TPS, DeGods in 7s, José in 90s      │
 // └──────────────┴─────────┴───────────────────────────────────────────┘
-export const WORKERS = process.env.WORKERS || 'auto';
+export const WORKERS = process.env.WORKERS || '1';
 export const MAX_WORKERS = safeInt(process.env.MAX_WORKERS, 30);
 
 // RPS_LIMIT: Your RPC tier's rate limit. Used by auto-workers to calculate
