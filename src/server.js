@@ -10,6 +10,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash, timingSafeEqual } from 'crypto';
 import * as db from './db.js';
+import { BODY_LIMIT_BYTES, MAX_BLOB_BYTES } from './config.js';
 import { isHydBlob, isOpenMode, extractContentHash, verifyBlobHash, computeBlobHash } from './hyd.js';
 import { startIndexer, getIndexerBudget } from './indexer.js';
 import { gossipBlob, pullBlob } from './gossip.js';
@@ -212,7 +213,7 @@ function requireWebhookAuth(req, reply) {
   return null; // auth passed
 }
 
-const app = Fastify({ logger: true, bodyLimit: 6 * 1024 * 1024 }); // 6 MB — matches /inscribe route limit
+const app = Fastify({ logger: true, bodyLimit: BODY_LIMIT_BYTES }); // derived from MAX_BLOB_MB × 1.4 for base64
 
 // Parse application/octet-stream as raw Buffer (for /upload/:hash PUT)
 app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (req, body, done) => {
@@ -693,9 +694,9 @@ app.put('/upload/:hash', async (req, reply) => {
     reply.status(400);
     return { error: 'Empty body' };
   }
-  if (blobBuf.length > 5 * 1024 * 1024) {
+  if (blobBuf.length > MAX_BLOB_BYTES) {
     reply.status(413);
-    return { error: `Blob too large (${(blobBuf.length / 1024 / 1024).toFixed(1)}MB). Maximum is 5MB.` };
+    return { error: `Blob too large (${(blobBuf.length / 1024 / 1024).toFixed(1)}MB). Maximum is ${MAX_BLOB_BYTES / 1024 / 1024}MB.` };
   }
 
   const hashMatch = verifyBlobHash(blobBuf, hash);

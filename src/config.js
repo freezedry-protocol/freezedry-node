@@ -174,9 +174,20 @@ export function setInscriptionMode(mode) {
   INSCRIPTION_MODE = mode;
 }
 
+// ── Blob size limits ────────────────────────────────────────────────────
+// Set MAX_BLOB_MB in .env to control max inscription size per node.
+// Operators choose based on RPC tier + wallet balance:
+//   Free/Public: 5   |  Dev $49: 15-20  |  Biz $499: 50  |  Pro $999: 100
+// bodyLimit auto-derives for base64 + JSON overhead. No code changes needed.
+export const MAX_BLOB_MB = safeInt(process.env.MAX_BLOB_MB, 15);
+export const MAX_BLOB_BYTES = MAX_BLOB_MB * 1024 * 1024;
+export const BODY_LIMIT_BYTES = Math.ceil(MAX_BLOB_BYTES * 1.4); // base64 encoding + JSON overhead
+
 // ── Writer settings ─────────────────────────────────────────────────────
 export const PROGRESS_SAVE_INTERVAL = 150; // save progress every N chunks
-export const MAX_JOB_RUNTIME_MS = 30 * 60 * 1000; // 30 min hard kill per job
+// Hard kill timer — safety net, not a throttle. Set high to never lose a paid job.
+// 15MB @ ~9.5 TPS = ~47 min, 50MB @ ~9.5 TPS = ~155 min. Default 4 hours covers all tiers.
+export const MAX_JOB_RUNTIME_MS = safeInt(process.env.MAX_JOB_RUNTIME_MS, 4 * 60 * 60 * 1000);
 
 // ── Quote / cost settings ───────────────────────────────────────────────
 // 5000 = on-chain baseTxFeeLamports in Jobs Config PDA (v3 — actual Solana TX cost)
@@ -191,4 +202,5 @@ console.log('[Config] Resolved:', JSON.stringify({
   USE_WEBSOCKET, WS_CONFIRM_TIMEOUT_MS, JITO_ENABLED, JITO_TIP_LAMPORTS,
   INSCRIPTION_MODE, DIRECT_PRICE_PER_MB_USD, DIRECT_MIN_PRICE_USD,
   BASE_CHUNK_COST_LAMPORTS, PARTNER_MARGIN_MULTIPLIER,
+  MAX_BLOB_MB, BODY_LIMIT_BYTES, MAX_JOB_RUNTIME_MS,
 }));

@@ -13,6 +13,7 @@ import {
   env, MEMO_PAYLOAD_SIZE, BASE_CHUNK_COST_LAMPORTS, PARTNER_MARGIN_MULTIPLIER,
   INSCRIPTION_MODE, DIRECT_PRICE_PER_MB_USD, DIRECT_MIN_PRICE_USD,
   DIRECT_PAYMENT_WALLET, COORDINATOR_URL, setInscriptionMode, fetchSolPrice, usdToLamports,
+  BODY_LIMIT_BYTES, MAX_BLOB_BYTES,
 } from '../config.js';
 import { getServerKeypair, getVoucherKeypair } from '../wallet.js';
 import { rpcCall } from './rpc.js';
@@ -179,7 +180,7 @@ export function registerWriterRoutes(app) {
 
   app.post('/inscribe', {
     config: { rawBody: true },
-    bodyLimit: 6 * 1024 * 1024, // 6MB — blob + JSON overhead
+    bodyLimit: BODY_LIMIT_BYTES, // 6MB — blob + JSON overhead
   }, async (req, reply) => {
     // Block marketplace inscriptions when in direct-only mode
     if (INSCRIPTION_MODE === 'direct') {
@@ -322,7 +323,7 @@ export function registerWriterRoutes(app) {
 
   app.post('/inscribe/voucher', {
     config: { rawBody: true },
-    bodyLimit: 6 * 1024 * 1024,
+    bodyLimit: BODY_LIMIT_BYTES,
   }, async (req, reply) => {
     // Vouchers work in ALL modes — they're operator-controlled pre-payments.
     // Direct mode makes vouchers cheaper to fulfill (no escrow/PDA overhead).
@@ -470,7 +471,7 @@ export function registerWriterRoutes(app) {
 
   app.post('/inscribe/direct', {
     config: { rawBody: true },
-    bodyLimit: 6 * 1024 * 1024,
+    bodyLimit: BODY_LIMIT_BYTES,
   }, async (req, reply) => {
     if (INSCRIPTION_MODE === 'marketplace') {
       reply.status(404);

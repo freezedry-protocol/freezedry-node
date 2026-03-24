@@ -11,7 +11,7 @@
 
 import { PublicKey } from '@solana/web3.js';
 import { createHash } from 'crypto';
-import { env } from '../config.js';
+import { env, MAX_BLOB_BYTES } from '../config.js';
 import { getServerKeypair } from '../wallet.js';
 import { rpcCall, sendWithRetry, fetchPriorityFee } from './rpc.js';
 import { processInscription, jobs as activeJobs } from './inscribe.js';
@@ -36,7 +36,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const POLL_INTERVAL = parseInt(env('CLAIM_POLL_INTERVAL') || '30000', 10);
 const CLAIM_TIMEOUT = parseInt(env('CLAIM_TIMEOUT_MS') || '1800000', 10); // 30 min
 const MAX_CONCURRENT_CLAIMS = parseInt(env('CAPACITY') || '2', 10);
-const MAX_BLOB_BYTES = parseInt(env('MAX_BLOB_MB') || '10', 10) * 1024 * 1024; // default 10MB
+// MAX_BLOB_BYTES imported from config.js — env-driven via MAX_BLOB_MB
 // Minimum escrow multiplier over TX cost — skip jobs that don't cover costs + margin.
 // 1.0 = accept any job where escrow covers TX reimbursement. >1.0 = require margin cushion.
 const MIN_ESCROW_MULTIPLIER = parseFloat(env('MIN_ESCROW_MULTIPLIER') || '1.0');
