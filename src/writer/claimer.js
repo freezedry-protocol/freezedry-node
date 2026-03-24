@@ -11,7 +11,7 @@
 
 import { PublicKey } from '@solana/web3.js';
 import { createHash } from 'crypto';
-import { env, MAX_BLOB_BYTES } from '../config.js';
+import { env, MAX_MARKETPLACE_BLOB_BYTES } from '../config.js';
 import { getServerKeypair } from '../wallet.js';
 import { rpcCall, sendWithRetry, fetchPriorityFee } from './rpc.js';
 import { processInscription, jobs as activeJobs } from './inscribe.js';
@@ -549,8 +549,8 @@ async function pollAndClaim() {
 
     // Pre-claim size check: skip jobs too large for this node
     const estimatedBlobSize = target.chunkCount * 585; // ~585 bytes payload per chunk
-    if (estimatedBlobSize > MAX_BLOB_BYTES) {
-      console.log(`[Claimer] Skipping job #${target.jobId} — ~${(estimatedBlobSize / 1024 / 1024).toFixed(1)}MB exceeds MAX_BLOB_MB (${MAX_BLOB_BYTES / 1024 / 1024}MB)`);
+    if (estimatedBlobSize > MAX_MARKETPLACE_BLOB_BYTES) {
+      console.log(`[Claimer] Skipping job #${target.jobId} — ~${(estimatedBlobSize / 1024 / 1024).toFixed(1)}MB exceeds MAX_MARKETPLACE_BLOB_MB (${MAX_MARKETPLACE_BLOB_BYTES / 1024 / 1024}MB)`);
       return;
     }
 

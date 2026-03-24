@@ -62,17 +62,19 @@ echo ""
 
 echo "  [3/9] RPC Tier — determines capacity, polling, and budget limits"
 echo ""
-echo "    1) Public (free)         — 5 MB max, 1 job,  60s poll,  100K credits/mo"
-echo "    2) Helius Developer      — 20 MB max, 2 jobs, 30s poll,  1M credits/mo"
-echo "    3) Helius Business       — 50 MB max, 4 jobs, 15s poll,  5M credits/mo"
-echo "    4) Self-hosted (Geyser)  — 100 MB max, 8 jobs, 10s poll, unlimited"
+echo "    1) Public (free)         — 5/5 MB (direct/market), 1 job,  60s poll,  100K credits/mo"
+echo "    2) Helius Developer      — 15/5 MB (direct/market), 2 jobs, 30s poll,  1M credits/mo"
+echo "    3) Helius Business       — 50/20 MB (direct/market), 4 jobs, 15s poll,  5M credits/mo"
+echo "    4) Self-hosted (Geyser)  — 100/50 MB (direct/market), 8 jobs, 10s poll, unlimited"
 echo ""
 read -rp "  Enter 1-4 [1]: " TIER_CHOICE
 
 case "${TIER_CHOICE:-1}" in
   2)
     TIER_NAME="Helius Developer"
-    MAX_BLOB_MB=20
+    MAX_DIRECT_BLOB_MB=15
+    MAX_MARKETPLACE_BLOB_MB=5
+    MAX_BLOB_MB=15
     CAPACITY=2
     POLL_INTERVAL=30000
     CREDIT_BUDGET=1000000
@@ -80,6 +82,8 @@ case "${TIER_CHOICE:-1}" in
     ;;
   3)
     TIER_NAME="Helius Business"
+    MAX_DIRECT_BLOB_MB=50
+    MAX_MARKETPLACE_BLOB_MB=20
     MAX_BLOB_MB=50
     CAPACITY=4
     POLL_INTERVAL=15000
@@ -88,6 +92,8 @@ case "${TIER_CHOICE:-1}" in
     ;;
   4)
     TIER_NAME="Self-hosted (Geyser)"
+    MAX_DIRECT_BLOB_MB=100
+    MAX_MARKETPLACE_BLOB_MB=50
     MAX_BLOB_MB=100
     CAPACITY=8
     POLL_INTERVAL=10000
@@ -96,6 +102,8 @@ case "${TIER_CHOICE:-1}" in
     ;;
   *)
     TIER_NAME="Public (free)"
+    MAX_DIRECT_BLOB_MB=5
+    MAX_MARKETPLACE_BLOB_MB=5
     MAX_BLOB_MB=5
     CAPACITY=1
     POLL_INTERVAL=60000
@@ -105,7 +113,8 @@ case "${TIER_CHOICE:-1}" in
 esac
 
 echo "    Selected: $TIER_NAME"
-echo "      Max blob size:     ${MAX_BLOB_MB} MB"
+echo "      Max direct blob:   ${MAX_DIRECT_BLOB_MB} MB"
+echo "      Max marketplace:   ${MAX_MARKETPLACE_BLOB_MB} MB"
 echo "      Concurrent jobs:   $CAPACITY"
 echo "      Poll interval:     $((POLL_INTERVAL / 1000))s"
 echo "      Credit budget:     $CREDIT_BUDGET/mo"
@@ -341,7 +350,10 @@ HELIUS_API_KEY=$HELIUS_KEY
 HELIUS_PLAN=$HELIUS_PLAN
 
 # ─── RPC Tier Preset ($TIER_NAME) ───
+# Direct: user pre-pays, safe to go big. Marketplace: node fronts TX fees.
 MAX_BLOB_MB=$MAX_BLOB_MB
+MAX_DIRECT_BLOB_MB=$MAX_DIRECT_BLOB_MB
+MAX_MARKETPLACE_BLOB_MB=$MAX_MARKETPLACE_BLOB_MB
 CAPACITY=$CAPACITY
 CREDIT_BUDGET=$CREDIT_BUDGET
 
@@ -461,7 +473,8 @@ if [ -n "$NODE_ENDPOINT" ]; then
 fi
 echo ""
 echo "    Tier Settings:"
-echo "      Max blob size:     ${MAX_BLOB_MB} MB"
+echo "      Max direct blob:   ${MAX_DIRECT_BLOB_MB} MB"
+echo "      Max marketplace:   ${MAX_MARKETPLACE_BLOB_MB} MB"
 echo "      Concurrent jobs:   $CAPACITY"
 echo "      Poll interval:     $((POLL_INTERVAL / 1000))s"
 echo "      Credit budget:     $CREDIT_BUDGET/mo"

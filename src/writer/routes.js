@@ -13,7 +13,7 @@ import {
   env, MEMO_PAYLOAD_SIZE, BASE_CHUNK_COST_LAMPORTS, PARTNER_MARGIN_MULTIPLIER,
   INSCRIPTION_MODE, DIRECT_PRICE_PER_MB_USD, DIRECT_MIN_PRICE_USD,
   DIRECT_PAYMENT_WALLET, COORDINATOR_URL, setInscriptionMode, fetchSolPrice, usdToLamports,
-  BODY_LIMIT_BYTES, MAX_BLOB_BYTES,
+  BODY_LIMIT_BYTES, MAX_BLOB_BYTES, MAX_DIRECT_BLOB_BYTES, MAX_MARKETPLACE_BLOB_BYTES,
 } from '../config.js';
 import { getServerKeypair, getVoucherKeypair } from '../wallet.js';
 import { rpcCall } from './rpc.js';
@@ -462,6 +462,7 @@ export function registerWriterRoutes(app) {
       congested,
       overflowToMarketplace,
       mode: INSCRIPTION_MODE,
+      maxBlobBytes: MAX_DIRECT_BLOB_BYTES,
       activeJobs: activeJobCount(),
       queueDepth: jobQueue.length,
     };
@@ -505,6 +506,11 @@ export function registerWriterRoutes(app) {
     }
 
     const actualChunkCount = chunkCount || Math.ceil(blobBuffer.length / MEMO_PAYLOAD_SIZE);
+
+    if (blobBuffer.length > MAX_DIRECT_BLOB_BYTES) {
+      reply.status(413);
+      return { error: `Blob too large (${(blobBuffer.length / 1024 / 1024).toFixed(1)}MB). This node accepts up to ${MAX_DIRECT_BLOB_BYTES / 1024 / 1024}MB for direct inscription.` };
+    }
 
     // Verify SOL transfer on-chain — two-step: TX cost + margin (USD-based)
     const paymentWallet = DIRECT_PAYMENT_WALLET || walletAddress;
@@ -757,6 +763,8 @@ export function registerWriterRoutes(app) {
       wallet: walletAddress,
       voucherWallet: voucherWalletAddr !== walletAddress ? voucherWalletAddr : null,
       inscriptionMode: INSCRIPTION_MODE,
+      maxDirectBlobMB: MAX_DIRECT_BLOB_BYTES / 1024 / 1024,
+      maxMarketplaceBlobMB: MAX_MARKETPLACE_BLOB_BYTES / 1024 / 1024,
       activeJobs: active,
       capacity: CAPACITY,
       queueSize: jobQueue.length,

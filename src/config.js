@@ -175,12 +175,24 @@ export function setInscriptionMode(mode) {
 }
 
 // ── Blob size limits ────────────────────────────────────────────────────
-// Set MAX_BLOB_MB in .env to control max inscription size per node.
-// Operators choose based on RPC tier + wallet balance:
-//   Free/Public: 5   |  Dev $49: 15-20  |  Biz $499: 50  |  Pro $999: 100
-// bodyLimit auto-derives for base64 + JSON overhead. No code changes needed.
-export const MAX_BLOB_MB = safeInt(process.env.MAX_BLOB_MB, 15);
-export const MAX_BLOB_BYTES = MAX_BLOB_MB * 1024 * 1024;
+// Two separate limits: direct (user pre-pays) vs marketplace (node fronts TX fees).
+// Set in .env per node. bodyLimit derives from the larger of the two.
+//
+// Direct: user's SOL is in hot wallet before inscription starts. Safe to go big.
+// Marketplace: node pays TX fees upfront, gets reimbursed via release_payment. Needs working capital.
+//
+// Presets by tier:
+//   Free/Public:  MAX_DIRECT_BLOB_MB=5   MAX_MARKETPLACE_BLOB_MB=5
+//   Dev $49:      MAX_DIRECT_BLOB_MB=15  MAX_MARKETPLACE_BLOB_MB=5
+//   Biz $499:     MAX_DIRECT_BLOB_MB=50  MAX_MARKETPLACE_BLOB_MB=20
+//   Pro $999:     MAX_DIRECT_BLOB_MB=100 MAX_MARKETPLACE_BLOB_MB=50
+export const MAX_DIRECT_BLOB_MB = safeInt(process.env.MAX_DIRECT_BLOB_MB, safeInt(process.env.MAX_BLOB_MB, 15));
+export const MAX_MARKETPLACE_BLOB_MB = safeInt(process.env.MAX_MARKETPLACE_BLOB_MB, safeInt(process.env.MAX_BLOB_MB, 5));
+export const MAX_DIRECT_BLOB_BYTES = MAX_DIRECT_BLOB_MB * 1024 * 1024;
+export const MAX_MARKETPLACE_BLOB_BYTES = MAX_MARKETPLACE_BLOB_MB * 1024 * 1024;
+// Legacy alias — largest of the two, used by bodyLimit and upload endpoint
+export const MAX_BLOB_BYTES = Math.max(MAX_DIRECT_BLOB_BYTES, MAX_MARKETPLACE_BLOB_BYTES);
+export const MAX_BLOB_MB = Math.max(MAX_DIRECT_BLOB_MB, MAX_MARKETPLACE_BLOB_MB);
 export const BODY_LIMIT_BYTES = Math.ceil(MAX_BLOB_BYTES * 1.4); // base64 encoding + JSON overhead
 
 // ── Writer settings ─────────────────────────────────────────────────────
@@ -202,5 +214,5 @@ console.log('[Config] Resolved:', JSON.stringify({
   USE_WEBSOCKET, WS_CONFIRM_TIMEOUT_MS, JITO_ENABLED, JITO_TIP_LAMPORTS,
   INSCRIPTION_MODE, DIRECT_PRICE_PER_MB_USD, DIRECT_MIN_PRICE_USD,
   BASE_CHUNK_COST_LAMPORTS, PARTNER_MARGIN_MULTIPLIER,
-  MAX_BLOB_MB, BODY_LIMIT_BYTES, MAX_JOB_RUNTIME_MS,
+  MAX_DIRECT_BLOB_MB, MAX_MARKETPLACE_BLOB_MB, BODY_LIMIT_BYTES, MAX_JOB_RUNTIME_MS,
 }));
