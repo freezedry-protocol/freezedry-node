@@ -27,7 +27,7 @@ import { signMessage } from '../crypto-auth.js';
 import { rpcCall, sendWithRetry, sendToUrl, fetchPriorityFee } from './rpc.js';
 import { buildV3ChunkData, splitIntoChunks, extractManifestHash } from './chunks.js';
 import { confirmAllSigs, surgicalRetry, verifyChunkZero } from './confirm.js';
-import { wsConfirmBatch, initWsConnection, isWsReady } from './ws-confirm.js';
+import { wsConfirmBatch, initWsConnection, isWsReady, createWsConfirmer } from './ws-confirm.js';
 import { addTipInstruction, sendBundleAndConfirm, getTxSignature } from './jito.js';
 import { sendPointerMemo } from './pointer.js';
 import {
@@ -140,6 +140,13 @@ function getRpcUrlForWorker(workerIndex) {
   return (process.env[`SEND_RPC_URL_${i}`] || process.env[`HELIUS_RPC_URL_${i}`] || '').trim() || null;
 }
 
+/** Derive WSS URL from a worker's RPC URL (https→wss, http→ws). */
+function getWsUrlForWorker(workerIndex) {
+  const rpcUrl = getRpcUrlForWorker(workerIndex);
+  if (!rpcUrl) return null;
+  return rpcUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+}
+
 function computeWorkerCount(totalChunks) {
   const rpcKeys = countAvailableRpcKeys();
   if (totalChunks < MIN_CHUNKS_PER_WORKER) return 1;
@@ -201,7 +208,7 @@ export function setShuttingDown(val) { _shuttingDown = val; }
  */
 async function runWorkerLoop({
   workerId, startIdx, endIdx, allChunks, manifestHash,
-  job, jobId, callbackUrl, workerCount, keypairOverride,
+  job, jobId, callbackUrl, workerCount, keypairOverride, wsConfirmer,
 }) {
   const serverKeypair = keypairOverride || getServerKeypair();
   const payerKey = serverKeypair.publicKey;
@@ -305,8 +312,11 @@ async function runWorkerLoop({
       }
 
       // Confirm sub-batch — WebSocket (push, ~0.6s) or polling (2.5s fallback)
-      if (USE_WEBSOCKET && isWsReady()) {
-        const wsFailed = await wsConfirmBatch(batchSigs);
+      // Per-worker WS confirmer if available, else shared singleton
+      const _wsReady = wsConfirmer ? wsConfirmer.isReady() : (USE_WEBSOCKET && isWsReady());
+      const _wsConfirm = wsConfirmer ? wsConfirmer.confirmBatch : wsConfirmBatch;
+      if (_wsReady) {
+        const wsFailed = await _wsConfirm(batchSigs);
         const wsOk = batchSigs.length - wsFailed.length;
         if (wsOk > 0) for (let i = 0; i < wsOk; i++) recordWsConfirm();
         if (wsFailed.length > 0) {
@@ -506,6 +516,19 @@ export async function processInscription(jobId, blobBuffer, chunkCount, hash, ca
     const WORKER_STAGGER_MS = 500;
     const rangeSize = Math.ceil(totalChunks / workerCount);
     const workerPromises = [];
+
+    // Per-worker WS confirmers (multi-worker only — each worker gets its own WS pipe)
+    const wsConfirmers = workerCount > 1
+      ? Array.from({ length: workerCount }, (_, i) => {
+          const wsUrl = getWsUrlForWorker(i);
+          if (wsUrl) {
+            try { return createWsConfirmer(wsUrl); }
+            catch (e) { console.warn(`[Job ${jobId}] WS confirmer ${i} failed: ${e.message}`); return null; }
+          }
+          return null;
+        })
+      : null;
+
     for (let w = 0; w < workerCount; w++) {
       const start = w * rangeSize;
       const end = Math.min(start + rangeSize, totalChunks);
@@ -515,6 +538,7 @@ export async function processInscription(jobId, blobBuffer, chunkCount, hash, ca
         workerId: w, startIdx: start, endIdx: end,
         allChunks, manifestHash, job, jobId,
         callbackUrl, workerCount, keypairOverride,
+        wsConfirmer: wsConfirmers ? wsConfirmers[w] : null,
       }));
     }
 
@@ -533,6 +557,9 @@ export async function processInscription(jobId, blobBuffer, chunkCount, hash, ca
     try {
       const results = await Promise.allSettled(workerPromises);
       clearInterval(cpInterval);
+
+      // Close per-worker WS connections
+      if (wsConfirmers) wsConfirmers.forEach(c => c?.close());
 
       // Save final checkpoint
       try {

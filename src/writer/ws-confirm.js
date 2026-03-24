@@ -231,3 +231,112 @@ export function closeWsConnection() {
     _wsReady = false;
   }
 }
+
+/**
+ * Create an isolated WS confirmer for a specific URL.
+ * Each instance has its own connection, subscriptions, and state.
+ * Used by multi-worker mode — 1 confirmer per worker per RPC key.
+ * Falls back gracefully if WS can't connect.
+ */
+export function createWsConfirmer(wsUrl) {
+  if (!WS || !wsUrl) return null;
+
+  let ws = null, ready = false, reconnecting = false, pingTimer = null;
+  const subscriptions = new Map();
+  const pendingSigs = new Map();
+  let nextId = 1;
+
+  function wsSend(obj) {
+    if (ws && WS && ws.readyState === WS.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  function doConnect() {
+    if (ws && (ws.readyState === WS.OPEN || ws.readyState === WS.CONNECTING)) return;
+    ws = new WS(wsUrl);
+    ready = false;
+
+    function onOpen() {
+      ready = true;
+      reconnecting = false;
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => { if (ws && typeof ws.ping === 'function') ws.ping(); }, PING_INTERVAL_MS);
+    }
+
+    function onMessage(rawData) {
+      try {
+        const text = typeof rawData === 'string' ? rawData : (rawData.data || rawData).toString();
+        const msg = JSON.parse(text);
+        if (msg.id && msg.result !== undefined && !msg.method) {
+          const pending = pendingSigs.get(msg.id);
+          if (pending) {
+            subscriptions.set(msg.result, { resolve: pending.resolve, timer: pending.timer, sig: pending.sig });
+            pendingSigs.delete(msg.id);
+          }
+          return;
+        }
+        if (msg.method === 'signatureNotification') {
+          const subId = msg.params?.subscription;
+          const sub = subscriptions.get(subId);
+          if (sub) {
+            const value = msg.params?.result?.value;
+            if (value === 'receivedSignature') return;
+            clearTimeout(sub.timer);
+            subscriptions.delete(subId);
+            sub.resolve({ confirmed: !value?.err, err: value?.err });
+          }
+        }
+      } catch (e) { /* ignore parse errors */ }
+    }
+
+    function onClose() {
+      ready = false;
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+      for (const [, sub] of subscriptions) { clearTimeout(sub.timer); sub.resolve({ confirmed: false, timeout: true }); }
+      subscriptions.clear();
+      for (const [, p] of pendingSigs) { clearTimeout(p.timer); p.resolve({ confirmed: false, timeout: true }); }
+      pendingSigs.clear();
+      if (!reconnecting) { reconnecting = true; setTimeout(() => { reconnecting = false; doConnect(); }, 2000); }
+    }
+
+    function onError() {
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    }
+
+    if (typeof ws.on === 'function') {
+      ws.on('open', onOpen); ws.on('message', onMessage); ws.on('close', onClose); ws.on('error', onError);
+    } else {
+      ws.addEventListener('open', onOpen); ws.addEventListener('message', onMessage);
+      ws.addEventListener('close', onClose); ws.addEventListener('error', onError);
+    }
+  }
+
+  function subscribeSig(sig) {
+    return new Promise((resolve) => {
+      if (!ready) { resolve({ confirmed: false, timeout: true }); return; }
+      const id = nextId++;
+      const timer = setTimeout(() => {
+        pendingSigs.delete(id);
+        for (const [subId, sub] of subscriptions) { if (sub.sig === sig) { subscriptions.delete(subId); break; } }
+        resolve({ confirmed: false, timeout: true });
+      }, WS_CONFIRM_TIMEOUT_MS);
+      pendingSigs.set(id, { resolve, timer, sig });
+      wsSend({ jsonrpc: '2.0', id, method: 'signatureSubscribe', params: [sig, { commitment: 'confirmed' }] });
+    });
+  }
+
+  doConnect();
+
+  return {
+    isReady: () => ready,
+    confirmBatch: async (sigs) => {
+      const results = await Promise.all(sigs.map(sig => subscribeSig(sig)));
+      const failed = [];
+      results.forEach((r, i) => { if (!r.confirmed) failed.push(i); });
+      return failed;
+    },
+    close: () => {
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+      if (ws) { if (typeof ws.removeAllListeners === 'function') ws.removeAllListeners(); ws.close(); ws = null; ready = false; }
+    },
+  };
+}
