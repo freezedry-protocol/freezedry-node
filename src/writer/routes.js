@@ -522,6 +522,7 @@ export function registerWriterRoutes(app) {
     // Allow 5% tolerance on margin for price movement between quote and verification
     const expectedLamports = txCostLamports + Math.ceil(marginLamports * 0.95);
 
+    let actualLamports = 0; // captured inside try, used by earnings logger outside
     try {
       // Retry getTransaction — TX may take a few seconds to propagate across RPC nodes
       let txInfo = null;
@@ -541,7 +542,6 @@ export function registerWriterRoutes(app) {
 
       // Find a SOL transfer to our payment wallet in the TX instructions
       let transferFound = false;
-      let actualLamports = 0;
       const instructions = txInfo.transaction?.message?.instructions || [];
       for (const ix of instructions) {
         if (ix.program === 'system' && ix.parsed?.type === 'transfer') {
@@ -620,20 +620,20 @@ export function registerWriterRoutes(app) {
       // Persist payment sig before queuing to prevent replay after cleanupJobs()
       setKV('payment:' + paymentSig, Date.now().toString());
 
-      // Log direct payment received (queued path)
-      logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
-        chunkCount: actualChunkCount, blobSize: blobBuffer.length,
-        payer: payerWallet, solPrice, marginUsd, txCostLamports,
-      });
-
       const directCallbackUrl = `${COORDINATOR_URL}/api/memo-store?action=job-callback`;
 
-      // Persist blob + job record for auto-resume on restart
+      // Persist blob + job record FIRST — if anything after this fails, job resumes on restart
       storeBlob(hash, blobBuffer);
       saveDirectJob({
         jobId, paymentSig, payerWallet, manifestHash: hash,
         chunkCount: actualChunkCount, blobSize: blobBuffer.length,
         callbackUrl: directCallbackUrl,
+      });
+
+      // Log earnings AFTER job is safely persisted — never risk losing a paid job
+      logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
+        chunkCount: actualChunkCount, blobSize: blobBuffer.length,
+        payer: payerWallet, solPrice, marginUsd, txCostLamports,
       });
 
       jobQueue.push({
@@ -653,19 +653,19 @@ export function registerWriterRoutes(app) {
     // Persist payment sig before starting to prevent replay after cleanupJobs()
     setKV('payment:' + paymentSig, Date.now().toString());
 
-    // Log direct payment received (immediate path)
-    logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
-      chunkCount: actualChunkCount, blobSize: blobBuffer.length,
-      payer: payerWallet, solPrice, marginUsd, txCostLamports,
-    });
-
-    // Persist blob + job record for auto-resume on restart
+    // Persist blob + job record FIRST — if anything after this fails, job resumes on restart
     const directCallbackUrl = `${COORDINATOR_URL}/api/memo-store?action=job-callback`;
     storeBlob(hash, blobBuffer);
     saveDirectJob({
       jobId, paymentSig, payerWallet, manifestHash: hash,
       chunkCount: actualChunkCount, blobSize: blobBuffer.length,
       callbackUrl: directCallbackUrl,
+    });
+
+    // Log earnings AFTER job is safely persisted — never risk losing a paid job
+    logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
+      chunkCount: actualChunkCount, blobSize: blobBuffer.length,
+      payer: payerWallet, solPrice, marginUsd, txCostLamports,
     });
 
     // Start inscription immediately
