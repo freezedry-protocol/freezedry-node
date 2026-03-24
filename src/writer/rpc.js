@@ -73,24 +73,28 @@ export async function rpcCall(method, params) {
 // ── Send RPC ──────────────────────────────────────────────────────────────────
 
 export function buildSendPool() {
+  // Read process.env directly — env() from config.js has a module-graph timing issue
+  // when loaded via server.js's full import chain. process.env is always available.
+  const pe = (key) => (process.env[key] || '').trim();
+
   // INSCRIPTION_RPC_URL overrides entire send pool for devnet testing
-  // (mixing devnet + mainnet endpoints in a send pool would be nonsensical)
-  const inscriptionRpc = env('INSCRIPTION_RPC_URL');
+  const inscriptionRpc = pe('INSCRIPTION_RPC_URL');
   if (inscriptionRpc) return [inscriptionRpc];
 
   const pool = [];
-  const key = env('HELIUS_API_KEY');
+  const key = pe('HELIUS_API_KEY');
   // NOTE: beta.helius-rpc.com returns 401 on sendTransaction — reads only!
   if (key) pool.push(`https://mainnet.helius-rpc.com/?api-key=${key}`);
-  if (env('SHYFT_API_KEY'))
-    pool.push(`https://rpc.shyft.to?api_key=${env('SHYFT_API_KEY')}`);
-  if (env('CHAINSTACK_SOLANA_URL'))
-    pool.push(env('CHAINSTACK_SOLANA_URL'));
+  if (pe('SHYFT_API_KEY'))
+    pool.push(`https://rpc.shyft.to?api_key=${pe('SHYFT_API_KEY')}`);
+  if (pe('CHAINSTACK_SOLANA_URL'))
+    pool.push(pe('CHAINSTACK_SOLANA_URL'));
 
-  // v7: Read additional send RPC URLs from env (SEND_RPC_URL_2 through SEND_RPC_URL_5)
+  // Additional send RPC URLs — try SEND_RPC_URL_N first, fall back to HELIUS_RPC_URL_N
+  // Each URL gets its own worker for parallel inscription. Must be separate Helius accounts.
   for (let i = 2; i <= 5; i++) {
-    const url = env(`SEND_RPC_URL_${i}`);
-    if (url) pool.push(url);
+    const url = pe(`SEND_RPC_URL_${i}`) || pe(`HELIUS_RPC_URL_${i}`);
+    if (url && !pool.includes(url)) pool.push(url);
   }
 
   if (pool.length === 0)
@@ -98,14 +102,22 @@ export function buildSendPool() {
   return pool;
 }
 
-const SEND_RPC_POOL = buildSendPool();
+// Lazy init — build pool on first use, not at module load. Avoids ES module evaluation timing.
+let _sendPool = null;
+function getSendPool() {
+  if (!_sendPool) {
+    _sendPool = buildSendPool();
+    console.log(`[RPC] Send pool: ${_sendPool.length} URL(s)`);
+  }
+  return _sendPool;
+}
 let sendPoolIndex = 0;
 function getNextSendRpcUrl() {
-  return SEND_RPC_POOL[sendPoolIndex++ % SEND_RPC_POOL.length];
+  return getSendPool()[sendPoolIndex++ % getSendPool().length];
 }
 
 /** Number of RPC URLs in the send pool — used to cap workers to available keys. */
-export function getSendPoolSize() { return SEND_RPC_POOL.length; }
+export function getSendPoolSize() { return getSendPool().length; }
 
 async function rpcSend(encodedTx) {
   const url = getNextSendRpcUrl();
@@ -149,12 +161,11 @@ export async function sendWithRetry(encoded) {
 }
 
 /**
- * Send pinned to a specific pool URL — retries stay on the same key.
- * Used by multi-worker mode: each worker gets its own key, never spills onto another.
- * Single-key nodes use sendWithRetry() instead (round-robin, backward compat).
+ * Send to a specific RPC URL — retries stay on the same URL.
+ * Used by multi-worker mode: each worker passes its own URL directly.
+ * No pool indexing, no round-robin — just the URL you give it.
  */
-export async function sendWithRetryPinned(encoded, poolIndex) {
-  const url = SEND_RPC_POOL[poolIndex % SEND_RPC_POOL.length];
+export async function sendToUrl(encoded, url) {
   const MAX_ATTEMPTS = 8;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
