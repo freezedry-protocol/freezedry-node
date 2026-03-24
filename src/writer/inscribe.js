@@ -24,7 +24,7 @@ import {
 } from '../config.js';
 import { getServerKeypair } from '../wallet.js';
 import { signMessage } from '../crypto-auth.js';
-import { rpcCall, sendWithRetry, fetchPriorityFee } from './rpc.js';
+import { rpcCall, sendWithRetry, sendWithRetryPinned, getSendPoolSize, fetchPriorityFee } from './rpc.js';
 import { buildV3ChunkData, splitIntoChunks, extractManifestHash } from './chunks.js';
 import { confirmAllSigs, surgicalRetry, verifyChunkZero } from './confirm.js';
 import { wsConfirmBatch, initWsConnection, isWsReady } from './ws-confirm.js';
@@ -122,20 +122,22 @@ async function getFreshFee() {
 // Small files (< MIN_CHUNKS_PER_WORKER chunks) always use 1 worker.
 
 function computeWorkerCount(totalChunks) {
-  // Explicit override
+  const poolSize = getSendPoolSize();
+
+  // Explicit override — cap to pool size so each worker gets its own key
   if (WORKERS !== 'auto') {
     const n = parseInt(WORKERS, 10);
     if (!isNaN(n) && n >= 1) {
       const maxByChunks = Math.max(1, Math.floor(totalChunks / MIN_CHUNKS_PER_WORKER));
-      return Math.min(n, maxByChunks);
+      return Math.min(n, maxByChunks, poolSize || 1);
     }
   }
-  // Auto-scale: file must be large enough + RPS budget must allow
+  // Auto-scale: cap by file size, RPS budget, AND pool size (1 worker per key)
   if (totalChunks < MIN_CHUNKS_PER_WORKER) return 1;
   const rpsBudget = Math.max(1, Math.floor(RPS_LIMIT / 20));
   const maxByChunks = Math.floor(totalChunks / MIN_CHUNKS_PER_WORKER);
-  if (totalChunks < 2000) return Math.min(3, rpsBudget, maxByChunks);
-  return Math.min(MAX_WORKERS, rpsBudget, maxByChunks);
+  if (totalChunks < 2000) return Math.min(3, rpsBudget, maxByChunks, poolSize);
+  return Math.min(MAX_WORKERS, rpsBudget, maxByChunks, poolSize);
 }
 
 // ── Progress callback to coordinator ─────────────────────────────────────────
@@ -189,7 +191,7 @@ export function setShuttingDown(val) { _shuttingDown = val; }
  */
 async function runWorkerLoop({
   workerId, startIdx, endIdx, allChunks, manifestHash,
-  job, jobId, callbackUrl, workerCount, keypairOverride,
+  job, jobId, callbackUrl, workerCount, keypairOverride, poolIndex,
 }) {
   const serverKeypair = keypairOverride || getServerKeypair();
   const payerKey = serverKeypair.publicKey;
@@ -264,14 +266,17 @@ async function runWorkerLoop({
             recordJitoBundleFallback();
             console.log(`${logPrefix} Jito rejected: ${result.error} — fallback`);
             const fallbackSigs = await staggeredSendAll(bundleTxs.map(tx => () =>
-              sendWithRetry(tx.serialize().toString('base64'))
+              send(tx.serialize().toString('base64'))
             ));
             batchSigs.push(...fallbackSigs);
           }
         }
       } else {
         // Standard path: send with stagger to avoid burst 429s
-        // Standard path: send with stagger to avoid burst 429s
+        // poolIndex pins this worker to a specific RPC key (multi-key mode)
+        const send = poolIndex !== undefined
+          ? (enc) => sendWithRetryPinned(enc, poolIndex)
+          : sendWithRetry;
         batchSigs = await staggeredSendAll(batchChunks.map((chunk, j) => () => {
           const chunkIdx = b + j;
           const tx = new Transaction({ recentBlockhash: blockhash, feePayer: payerKey })
@@ -283,7 +288,7 @@ async function runWorkerLoop({
               data: buildV3ChunkData(chunk, chunkIdx, manifestHash),
             }));
           tx.sign(serverKeypair);
-          return sendWithRetry(tx.serialize().toString('base64'));
+          return send(tx.serialize().toString('base64'));
         }));
       }
 
@@ -309,7 +314,7 @@ async function runWorkerLoop({
                   data: buildV3ChunkData(batchChunks[j], chunkIdx, manifestHash),
                 }));
               tx.sign(serverKeypair);
-              batchSigs[j] = await sendWithRetry(tx.serialize().toString('base64'));
+              batchSigs[j] = await send(tx.serialize().toString('base64'));
             } catch (resendErr) {
               console.log(`${logPrefix} re-send chunk ${b + j} failed: ${resendErr.message}`);
             }
@@ -346,7 +351,7 @@ async function runWorkerLoop({
                     data: buildV3ChunkData(batchChunks[j], chunkIdx, manifestHash),
                   }));
                 tx.sign(serverKeypair);
-                batchSigs[j] = await sendWithRetry(tx.serialize().toString('base64'));
+                batchSigs[j] = await send(tx.serialize().toString('base64'));
               } catch (resendErr) {
                 console.log(`${logPrefix} re-send chunk ${b + j} failed: ${resendErr.message} — keeping original sig`);
               }
@@ -489,6 +494,7 @@ export async function processInscription(jobId, blobBuffer, chunkCount, hash, ca
     const WORKER_STAGGER_MS = 500;
     const rangeSize = Math.ceil(totalChunks / workerCount);
     const workerPromises = [];
+    const poolSize = getSendPoolSize();
     for (let w = 0; w < workerCount; w++) {
       const start = w * rangeSize;
       const end = Math.min(start + rangeSize, totalChunks);
@@ -498,6 +504,7 @@ export async function processInscription(jobId, blobBuffer, chunkCount, hash, ca
         workerId: w, startIdx: start, endIdx: end,
         allChunks, manifestHash, job, jobId,
         callbackUrl, workerCount, keypairOverride,
+        poolIndex: poolSize > 1 ? w % poolSize : undefined,
       }));
     }
 

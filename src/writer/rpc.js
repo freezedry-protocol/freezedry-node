@@ -104,6 +104,9 @@ function getNextSendRpcUrl() {
   return SEND_RPC_POOL[sendPoolIndex++ % SEND_RPC_POOL.length];
 }
 
+/** Number of RPC URLs in the send pool — used to cap workers to available keys. */
+export function getSendPoolSize() { return SEND_RPC_POOL.length; }
+
 async function rpcSend(encodedTx) {
   const url = getNextSendRpcUrl();
   const resp = await fetch(url, {
@@ -128,6 +131,48 @@ export async function sendWithRetry(encoded) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       return await rpcSend(encoded);
+    } catch (err) {
+      if (attempt >= MAX_ATTEMPTS - 1) throw err;
+      const isRate = err.message.includes('-32429') || err.message.includes('429') || err.message.toLowerCase().includes('ratelimit');
+      const isAuthErr = err.message.includes('401') || err.message.includes('403') || err.message.toLowerCase().includes('unauthorized');
+      const isTransient = isRate || isAuthErr
+        || err.message.includes('blockhash')
+        || err.message.includes('-32002')
+        || err.message.includes('timeout')
+        || err.message.includes('ECONNRESET')
+        || err.message.includes('fetch');
+      const delay = isRate ? Math.min(1000 * Math.pow(2, attempt), 20000) : isAuthErr ? 100 : 500 * (attempt + 1);
+      if (isTransient) await sleep(delay);
+      else throw err;
+    }
+  }
+}
+
+/**
+ * Send pinned to a specific pool URL — retries stay on the same key.
+ * Used by multi-worker mode: each worker gets its own key, never spills onto another.
+ * Single-key nodes use sendWithRetry() instead (round-robin, backward compat).
+ */
+export async function sendWithRetryPinned(encoded, poolIndex) {
+  const url = SEND_RPC_POOL[poolIndex % SEND_RPC_POOL.length];
+  const MAX_ATTEMPTS = 8;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendTransaction', params: [encoded, {
+          encoding: 'base64', skipPreflight: true, maxRetries: 0,
+        }] }),
+      });
+      if (resp.status === 429) throw new Error('RPC sendTransaction: ratelimited (HTTP 429)');
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(`RPC sendTransaction: HTTP ${resp.status} — ${text.slice(0, 100)}`);
+      }
+      const data = await resp.json();
+      if (data.error) throw new Error(`RPC sendTransaction: ${JSON.stringify(data.error)}`);
+      return data.result;
     } catch (err) {
       if (attempt >= MAX_ATTEMPTS - 1) throw err;
       const isRate = err.message.includes('-32429') || err.message.includes('429') || err.message.toLowerCase().includes('ratelimit');
