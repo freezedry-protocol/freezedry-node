@@ -140,8 +140,18 @@ function getRpcUrlForWorker(workerIndex) {
   return (process.env[`SEND_RPC_URL_${i}`] || process.env[`HELIUS_RPC_URL_${i}`] || '').trim() || null;
 }
 
-/** Derive WSS URL from a worker's RPC URL (https→wss, http→ws). */
+/** Get WSS URL for a worker. Checks explicit HELIUS_WS_URL_N first, then derives from RPC URL. */
 function getWsUrlForWorker(workerIndex) {
+  // Explicit WS URLs take priority (operator can set optimal WSS endpoints)
+  if (workerIndex === 0) {
+    const explicit = (process.env.HELIUS_WS_URL || '').trim();
+    if (explicit) return explicit;
+  } else {
+    const i = workerIndex + 1;
+    const explicit = (process.env[`HELIUS_WS_URL_${i}`] || '').trim();
+    if (explicit) return explicit;
+  }
+  // Fallback: derive from RPC URL (https→wss)
   const rpcUrl = getRpcUrlForWorker(workerIndex);
   if (!rpcUrl) return null;
   return rpcUrl.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -528,6 +538,20 @@ export async function processInscription(jobId, blobBuffer, chunkCount, hash, ca
           return null;
         })
       : null;
+
+    // Wait for WS connections to establish before workers start sending
+    if (wsConfirmers) {
+      const WS_WARMUP_MS = 3000;
+      const ready = await Promise.race([
+        Promise.all(wsConfirmers.map(c => c ? new Promise(r => {
+          const check = () => c.isReady() ? r(true) : setTimeout(check, 100);
+          check();
+        }) : Promise.resolve(true))),
+        new Promise(r => setTimeout(() => r(false), WS_WARMUP_MS)),
+      ]);
+      if (ready) console.log(`[Job ${jobId}] WS connections ready`);
+      else console.log(`[Job ${jobId}] WS warmup timeout — starting with polling fallback`);
+    }
 
     for (let w = 0; w < workerCount; w++) {
       const start = w * rangeSize;
