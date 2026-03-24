@@ -510,6 +510,19 @@ async function tryReleasePayment(job) {
   const txBase64 = tx.serialize().toString('base64');
   const sig = await sendAndConfirm(txBase64);
   console.log(`[Attester] Auto-released payment for job #${freshJob.jobId} + receipt memo to ${freshJob.creator.toBase58().slice(0, 8)}... — tx: ${sig}`);
+
+  // Record on-chain attester payout (program already split 10% to our wallet)
+  try {
+    const reimbursement = (freshJob.chunkCount || 0) * 5000;
+    const margin = Number(freshJob.escrowLamports) - reimbursement;
+    const attesterShare = Math.floor(margin * 1000 / 10000);
+    db.logEarning(freshJob.jobId.toString(), 'attester', 'escrow_released',
+      attesterShare, sig,
+      { escrow: Number(freshJob.escrowLamports), chunks: freshJob.chunkCount }
+    );
+  } catch (err) {
+    console.warn('[Attester] Earnings log failed:', err.message);
+  }
 }
 
 /**

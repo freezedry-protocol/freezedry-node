@@ -374,6 +374,19 @@ async function executeClaimedJob(job) {
     claimedJobs.get(job.jobId).pointerSig = pointerSig;
     console.log(`[Claimer] Job #${job.jobId} fully completed — pointer: ${pointerSig}`);
 
+    // Log expected marketplace writer earnings (reimbursement + 40% margin)
+    try {
+      const reimbursement = job.chunkCount * 5000;
+      const margin = Number(job.escrowLamports) - reimbursement;
+      const writerMargin = Math.floor(margin * 4000 / 10000);
+      db.logEarning(job.jobId.toString(), 'marketplace', 'escrow_released',
+        reimbursement + writerMargin, null,
+        { escrow: Number(job.escrowLamports), chunks: job.chunkCount, role: 'writer' }
+      );
+    } catch (err) {
+      console.warn('[Claimer] Earnings log failed:', err.message);
+    }
+
     // Clean up after a delay (keep for status queries)
     setTimeout(() => {
       claimedJobs.delete(job.jobId);

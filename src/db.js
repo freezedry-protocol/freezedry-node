@@ -120,6 +120,24 @@ try {
   if (!err.message?.includes('duplicate column')) console.warn('[DB] ALTER peers.hot_wallet_pubkey:', err.message);
 }
 
+// Earnings ledger — append-only log of all income and costs per job
+db.exec(`
+  CREATE TABLE IF NOT EXISTS earnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    event TEXT NOT NULL,
+    amount_lamports INTEGER NOT NULL,
+    tx_sig TEXT,
+    meta TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(job_id, event)
+  );
+  CREATE INDEX IF NOT EXISTS idx_earnings_job ON earnings(job_id);
+  CREATE INDEX IF NOT EXISTS idx_earnings_type ON earnings(type);
+  CREATE INDEX IF NOT EXISTS idx_earnings_created ON earnings(created_at);
+`);
+
 // Prepared statements
 const stmts = {
   upsertArtwork: db.prepare(`
@@ -209,6 +227,22 @@ const stmts = {
   `),
   getManifestCount: db.prepare(`SELECT COUNT(*) as count FROM artworks`),
   getManifestLatest: db.prepare(`SELECT MAX(indexed_at) as latest FROM artworks`),
+
+  // ── Earnings ledger ──
+  insertEarning: db.prepare(`
+    INSERT OR IGNORE INTO earnings (job_id, type, event, amount_lamports, tx_sig, meta, created_at)
+    VALUES (@jobId, @type, @event, @amountLamports, @txSig, @meta, @createdAt)
+  `),
+  getEarningsSummary: db.prepare(`
+    SELECT type,
+      SUM(CASE WHEN amount_lamports > 0 THEN amount_lamports ELSE 0 END) as total_in,
+      SUM(CASE WHEN amount_lamports < 0 THEN amount_lamports ELSE 0 END) as total_out,
+      SUM(amount_lamports) as net,
+      COUNT(DISTINCT job_id) as jobs
+    FROM earnings GROUP BY type
+  `),
+  getEarningsForJob: db.prepare(`SELECT * FROM earnings WHERE job_id = ? ORDER BY created_at`),
+  getEarningsSince: db.prepare(`SELECT * FROM earnings WHERE created_at > ? ORDER BY created_at DESC LIMIT ?`),
 };
 
 // Transaction wrapper for bulk inserts
@@ -319,6 +353,34 @@ export function getKV(key) {
 
 export function setKV(key, value) {
   kvSet.run(key, value);
+}
+
+// ── Earnings ledger ─────────────────────────────────────────────────────────
+
+/** Log an earnings event. Fire-and-forget — never throws. */
+export function logEarning(jobId, type, event, amountLamports, txSig = null, metaObj = null) {
+  try {
+    stmts.insertEarning.run({
+      jobId, type, event, amountLamports,
+      txSig: txSig || null,
+      meta: metaObj ? JSON.stringify(metaObj) : null,
+      createdAt: Date.now(),
+    });
+  } catch (err) {
+    console.warn('[earnings] INSERT failed (continuing):', err.message);
+  }
+}
+
+export function getEarningsSummary() {
+  return stmts.getEarningsSummary.all();
+}
+
+export function getEarningsForJob(jobId) {
+  return stmts.getEarningsForJob.all(jobId);
+}
+
+export function getEarningsSince(sinceMs, limit = 100) {
+  return stmts.getEarningsSince.all(sinceMs, limit);
 }
 
 // ── Blob repair functions ─────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import {
   FEE_REFRESH_MS, MULTI_JOB_CONCURRENCY,
   USE_WEBSOCKET, JITO_ENABLED, JITO_BUNDLE_SIZE,
   WORKERS, MAX_WORKERS, RPS_LIMIT, MIN_CHUNKS_PER_WORKER,
+  TX_BASE_FEE,
 } from '../config.js';
 import { getServerKeypair } from '../wallet.js';
 import { signMessage } from '../crypto-auth.js';
@@ -35,7 +36,7 @@ import {
   recordWsTimeout, recordPollingConfirm,
 } from './metrics.js';
 import { isHydBlob } from '../hyd.js';
-import { getKV, setKV, getBlob, getIncompleteDirectJobs, completeDirectJob, failDirectJob } from '../db.js';
+import { getKV, setKV, getBlob, getIncompleteDirectJobs, completeDirectJob, failDirectJob, logEarning } from '../db.js';
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -625,6 +626,12 @@ export async function processInscription(jobId, blobBuffer, chunkCount, hash, ca
     const mode = (USE_WEBSOCKET && JITO_ENABLED) ? 'ws+jito' : USE_WEBSOCKET ? 'ws' : JITO_ENABLED ? 'jito' : 'standard';
     console.log(`[Job ${jobId}] Complete — ${totalChunks} chunks, ${workerCount} worker(s), ${Math.round(elapsed)}s (${(totalChunks / elapsed).toFixed(1)} TPS, mode=${mode})`);
     recordJob(jobId, { chunks: totalChunks, elapsedMs: Date.now() - startTime, blobSize: blobBuffer.length, mode, workers: workerCount });
+
+    // Log TX fees spent for earnings ledger
+    const earningsType = meta?.direct ? 'direct' : jobId.startsWith('voucher-') ? 'voucher' : 'marketplace';
+    logEarning(jobId, earningsType, 'tx_fees_spent', -(totalChunks * TX_BASE_FEE), null, {
+      chunks: totalChunks, elapsed: Math.round(elapsed), workers: workerCount,
+    });
 
     // Report completion to coordinator (await — this is the critical one)
     await reportProgress(callbackUrl, jobId, 'complete', {

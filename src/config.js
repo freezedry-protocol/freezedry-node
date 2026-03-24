@@ -18,6 +18,11 @@
  * Dev plan: 50 RPS general but only 5 sendTx/sec. This is the TPS ceiling.
  * Pro plan ($999): 100 sendTx/sec = our target upgrade for production speed.
  *
+ * DUAL-RPC: Add SEND_RPC_URL_2 (up to _5) for extra sendTransaction keys.
+ * writer/rpc.js round-robins sends across all URLs in buildSendPool().
+ * HELIUS_RPC_URL_2 only affects rpc-pool.js (claimer/indexer reads).
+ * Two Dev keys = 10 sendTx/sec budget → c=10 is safe.
+ *
  * Workers parallelize chunk ranges within a single file.
  * Focus mode: all RPS goes to one job at a time (serial FIFO).
  */
@@ -45,9 +50,10 @@ export const MEMO_PAYLOAD_SIZE = MEMO_CHUNK_SIZE - V3_HEADER_SIZE; // 585B
 export const TX_BASE_FEE = 5_000;
 
 // SEND_CONCURRENCY: TXs sent in parallel per worker per batch.
-// Default 8: empirically tested (2026-03-18) — 4.83 TPS, 99% clean, 1 429/100 chunks.
-// Helius Dev sendTx limit = 5/sec. c=8 d=200ms rides just under with minimal 429s.
-export const SEND_CONCURRENCY = safeInt(process.env.SEND_CONCURRENCY, 8);
+// Default 10: dual-RPC config (2026-03-24) — two Dev keys via SEND_RPC_URL round-robin,
+// each key sees ~5 sends/sec. Single-key operators: set to 8 (proven 4.83 TPS, 99% clean).
+// Helius Dev sendTx limit = 5/sec PER KEY. c=10 with 2 keys = ~5/key.
+export const SEND_CONCURRENCY = safeInt(process.env.SEND_CONCURRENCY, 10);
 
 // BATCH_DELAY_MS: Pause between batches. Controls RPS per worker.
 // Default 200ms: empirically tested (2026-03-18) — best balance of speed vs clean sends.

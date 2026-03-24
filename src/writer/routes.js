@@ -17,7 +17,7 @@ import {
 import { getServerKeypair, getVoucherKeypair } from '../wallet.js';
 import { rpcCall } from './rpc.js';
 import { jobs, processInscription, cleanupJobs, setShuttingDown, resumeDirectJobs } from './inscribe.js';
-import { getKV, setKV, getBlob, storeBlob, saveDirectJob, completeDirectJob, failDirectJob } from '../db.js';
+import { getKV, setKV, getBlob, storeBlob, saveDirectJob, completeDirectJob, failDirectJob, logEarning, getEarningsSummary, getEarningsSince } from '../db.js';
 
 const CAPACITY = parseInt(env('CAPACITY') || '3', 10);
 const QUEUE_MAX = parseInt(env('QUEUE_MAX') || '0', 10); // 0 = no queue (503 at capacity)
@@ -534,12 +534,14 @@ export function registerWriterRoutes(app) {
 
       // Find a SOL transfer to our payment wallet in the TX instructions
       let transferFound = false;
+      let actualLamports = 0;
       const instructions = txInfo.transaction?.message?.instructions || [];
       for (const ix of instructions) {
         if (ix.program === 'system' && ix.parsed?.type === 'transfer') {
           const info = ix.parsed.info;
           if (info.destination === paymentWallet && info.lamports >= expectedLamports) {
             transferFound = true;
+            actualLamports = info.lamports;
             break;
           }
         }
@@ -611,6 +613,12 @@ export function registerWriterRoutes(app) {
       // Persist payment sig before queuing to prevent replay after cleanupJobs()
       setKV('payment:' + paymentSig, Date.now().toString());
 
+      // Log direct payment received (queued path)
+      logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
+        chunkCount: actualChunkCount, blobSize: blobBuffer.length,
+        payer: payerWallet, solPrice, marginUsd, txCostLamports,
+      });
+
       const directCallbackUrl = `${COORDINATOR_URL}/api/memo-store?action=job-callback`;
 
       // Persist blob + job record for auto-resume on restart
@@ -637,6 +645,12 @@ export function registerWriterRoutes(app) {
 
     // Persist payment sig before starting to prevent replay after cleanupJobs()
     setKV('payment:' + paymentSig, Date.now().toString());
+
+    // Log direct payment received (immediate path)
+    logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
+      chunkCount: actualChunkCount, blobSize: blobBuffer.length,
+      payer: payerWallet, solPrice, marginUsd, txCostLamports,
+    });
 
     // Persist blob + job record for auto-resume on restart
     const directCallbackUrl = `${COORDINATOR_URL}/api/memo-store?action=job-callback`;
@@ -691,6 +705,35 @@ export function registerWriterRoutes(app) {
 
     console.log(`[Writer] Inscription mode changed: ${previousMode} → ${mode}`);
     return { ok: true, mode: INSCRIPTION_MODE, previousMode };
+  });
+
+  // ── GET /admin/earnings — operator earnings dashboard ──────────────────
+
+  app.get('/admin/earnings', async (req, reply) => {
+    const authErr = requireApiKey(req, reply);
+    if (authErr) return authErr;
+
+    const since = parseInt(req.query.since) || 0;
+    const summary = getEarningsSummary();
+    const recent = getEarningsSince(since || (Date.now() - 30 * 24 * 60 * 60 * 1000), 50);
+
+    const byType = {};
+    for (const row of summary) {
+      byType[row.type] = { in: row.total_in, out: row.total_out, net: row.net, jobs: row.jobs };
+    }
+    const totalIn = summary.reduce((s, r) => s + (r.total_in || 0), 0);
+    const totalOut = summary.reduce((s, r) => s + (r.total_out || 0), 0);
+
+    return {
+      ok: true,
+      summary: {
+        totalIn, totalOut,
+        netProfit: totalIn + totalOut,
+        netProfitSol: (totalIn + totalOut) / 1e9,
+        byType,
+      },
+      recent: recent.map(r => ({ ...r, meta: r.meta ? JSON.parse(r.meta) : null })),
+    };
   });
 
   // ── Extend /health with writer info ────────────────────────────────────
