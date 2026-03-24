@@ -103,6 +103,27 @@ export function registerWriterRoutes(app) {
   const walletAddress = getServerKeypair().publicKey.toBase58();
   console.log(`[Writer] Writer role active — wallet: ${walletAddress}, capacity: ${CAPACITY}`);
 
+  /** Auto-refund: send SOL back to payer when job can't be fulfilled after payment. */
+  async function autoRefund(payerAddr, amountLamports, paymentSig, reason) {
+    const refundAmount = amountLamports - 5000; // deduct 1 TX fee
+    if (refundAmount <= 0) {
+      console.warn(`[Writer] Refund too small (${amountLamports} lamports) — skipping`);
+      return null;
+    }
+    const keypair = getServerKeypair();
+    const { Connection, SystemProgram, Transaction, PublicKey, sendAndConfirmTransaction } = await import('@solana/web3.js');
+    const conn = new Connection(env('HELIUS_RPC_URL') || 'https://api.mainnet-beta.solana.com', 'confirmed');
+    const tx = new Transaction().add(
+      SystemProgram.transfer({ fromPubkey: keypair.publicKey, toPubkey: new PublicKey(payerAddr), lamports: refundAmount })
+    );
+    const sig = await sendAndConfirmTransaction(conn, tx, [keypair]);
+    console.log(`[Writer] Auto-refund: ${refundAmount} lamports → ${payerAddr.slice(0, 8)}... (reason: ${reason}, tx: ${sig})`);
+    logEarning(`refund-${paymentSig.slice(0, 8)}`, 'direct', 'refund_sent', -refundAmount, sig, {
+      originalPaymentSig: paymentSig, payer: payerAddr, reason,
+    });
+    return sig;
+  }
+
   // Periodic cleanup of old finished jobs (every 10 minutes)
   setInterval(() => cleanupJobs(), 10 * 60 * 1000);
 
@@ -569,12 +590,11 @@ export function registerWriterRoutes(app) {
       return { error: 'Payment verification failed — RPC error', detail: err.message };
     }
 
-    // Replay protection — persistent KV check survives cleanupJobs() eviction
+    // Replay protection — payment already processed (no refund needed, job exists)
     if (getKV('payment:' + paymentSig)) {
       reply.status(409);
       return { error: 'Payment signature already used', paymentSig };
     }
-    // Also check in-memory active jobs + queue (catches concurrent requests before KV write)
     for (const [, job] of jobs) {
       if (job.meta?.paymentSig === paymentSig) {
         reply.status(409);
@@ -588,41 +608,25 @@ export function registerWriterRoutes(app) {
       }
     }
 
-    // Check wallet balance before accepting
-    const balanceErr = await checkWalletBalance(actualChunkCount, reply);
-    if (balanceErr) return balanceErr;
+    // ── DANGER ZONE: payment verified, job not yet persisted ──────────────
+    // If ANYTHING fails from here until saveDirectJob(), auto-refund the user.
+    // Once the job is persisted, resumeDirectJobs() handles recovery on restart.
+    try {
+      const balanceErr = await checkWalletBalance(actualChunkCount, reply);
+      if (balanceErr) throw new Error('NODE_BALANCE_INSUFFICIENT');
 
-    const jobId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const jobId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Check for duplicate by hash (prevent double-inscription of same blob)
-    for (const [id, job] of jobs) {
-      if (job.manifestHash === hash && job.status === 'writing') {
-        return { accepted: false, reason: 'Inscription already in progress for this hash', jobId: id };
-      }
-    }
-
-    const active = activeJobCount();
-    const estimatedSeconds = Math.ceil(actualChunkCount / 15);
-
-    // If at capacity, queue or reject
-    if (active >= CAPACITY) {
-      if (QUEUE_MAX <= 0 || jobQueue.length >= QUEUE_MAX) {
-        reply.status(503);
-        return {
-          error: 'At capacity and queue full',
-          activeJobs: active,
-          capacity: CAPACITY,
-          queueSize: jobQueue.length,
-          hint: INSCRIPTION_MODE === 'hybrid' ? 'Frontend should fall back to marketplace' : 'Try again later',
-        };
+      // Check for duplicate by hash (prevent double-inscription of same blob)
+      for (const [id, job] of jobs) {
+        if (job.manifestHash === hash && job.status === 'writing') {
+          return { accepted: false, reason: 'Inscription already in progress for this hash', jobId: id };
+        }
       }
 
-      // Persist payment sig before queuing to prevent replay after cleanupJobs()
+      // Persist payment + job ASAP — once this succeeds, job is recoverable
       setKV('payment:' + paymentSig, Date.now().toString());
-
       const directCallbackUrl = `${COORDINATOR_URL}/api/memo-store?action=job-callback`;
-
-      // Persist blob + job record FIRST — if anything after this fails, job resumes on restart
       storeBlob(hash, blobBuffer);
       saveDirectJob({
         jobId, paymentSig, payerWallet, manifestHash: hash,
@@ -630,64 +634,71 @@ export function registerWriterRoutes(app) {
         callbackUrl: directCallbackUrl,
       });
 
-      // Log earnings AFTER job is safely persisted — never risk losing a paid job
+      // ── JOB PERSISTED — safe from here. No refund needed below this line. ──
+
       logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
         chunkCount: actualChunkCount, blobSize: blobBuffer.length,
         payer: payerWallet, solPrice, marginUsd, txCostLamports,
       });
 
-      jobQueue.push({
-        jobId, blobBuffer, chunkCount: actualChunkCount, hash,
-        callbackUrl: directCallbackUrl, meta: { payerWallet, paymentSig, direct: true, creator: payerWallet },
-        queuedAt: Date.now(),
-      });
-      console.log(`[Writer] Direct job ${jobId} queued (position ${jobQueue.length}/${QUEUE_MAX})`);
+      const active = activeJobCount();
+      const estimatedSeconds = Math.ceil(actualChunkCount / 15);
+
+      // Paid jobs ALWAYS get accepted — queue if at capacity, never reject
+      if (active >= CAPACITY) {
+        jobQueue.push({
+          jobId, blobBuffer, chunkCount: actualChunkCount, hash,
+          callbackUrl: directCallbackUrl, meta: { payerWallet, paymentSig, direct: true, creator: payerWallet },
+          queuedAt: Date.now(),
+        });
+        console.log(`[Writer] Direct job ${jobId} queued (position ${jobQueue.length}, payer: ${payerWallet.slice(0, 8)}...)`);
+
+        reply.status(202);
+        return {
+          accepted: true, queued: true, jobId, chunkCount: actualChunkCount,
+          queuePosition: jobQueue.length, estimatedSeconds: estimatedSeconds + (jobQueue.length * estimatedSeconds),
+        };
+      }
+
+      // Start inscription immediately
+      processInscription(jobId, blobBuffer, actualChunkCount, hash, directCallbackUrl, { payerWallet, paymentSig, direct: true, creator: payerWallet })
+        .then(() => {
+          const j = jobs.get(jobId);
+          if (j && j.status === 'complete') completeDirectJob(jobId);
+        })
+        .catch(err => {
+          console.error(`[Writer] Direct job ${jobId} uncaught: ${err.message}`);
+          failDirectJob(jobId);
+        })
+        .finally(() => drainQueue());
+
+      console.log(`[Writer] Direct job accepted: ${jobId} (${actualChunkCount} chunks, payer: ${payerWallet.slice(0, 8)}...)`);
 
       reply.status(202);
       return {
-        accepted: true, queued: true, jobId, chunkCount: actualChunkCount,
-        queuePosition: jobQueue.length, estimatedSeconds: estimatedSeconds + (jobQueue.length * estimatedSeconds),
+        accepted: true, queued: false, jobId, chunkCount: actualChunkCount,
+        estimatedSeconds, activeJobs: active + 1, capacity: CAPACITY,
       };
+
+    } catch (dangerErr) {
+      // Payment verified but job not persisted — auto-refund
+      console.error(`[Writer] CRITICAL: Post-payment failure for ${payerWallet.slice(0, 8)}..., attempting refund of ${actualLamports} lamports: ${dangerErr.message}`);
+      try {
+        const refundSig = await autoRefund(payerWallet, actualLamports, paymentSig, dangerErr.message);
+        reply.status(500);
+        return {
+          error: 'Inscription failed — your SOL has been refunded. Please try again.',
+          refunded: true, refundAmount: actualLamports - 5000, refundSig,
+        };
+      } catch (refundErr) {
+        console.error(`[Writer] REFUND FAILED for ${payerWallet}: ${refundErr.message}. Manual refund needed: ${actualLamports} lamports, paymentSig: ${paymentSig}`);
+        reply.status(500);
+        return {
+          error: 'Inscription failed — automatic refund could not be processed. Please contact support with your payment signature.',
+          refunded: false, paymentSig, payerWallet, amount: actualLamports,
+        };
+      }
     }
-
-    // Persist payment sig before starting to prevent replay after cleanupJobs()
-    setKV('payment:' + paymentSig, Date.now().toString());
-
-    // Persist blob + job record FIRST — if anything after this fails, job resumes on restart
-    const directCallbackUrl = `${COORDINATOR_URL}/api/memo-store?action=job-callback`;
-    storeBlob(hash, blobBuffer);
-    saveDirectJob({
-      jobId, paymentSig, payerWallet, manifestHash: hash,
-      chunkCount: actualChunkCount, blobSize: blobBuffer.length,
-      callbackUrl: directCallbackUrl,
-    });
-
-    // Log earnings AFTER job is safely persisted — never risk losing a paid job
-    logEarning(jobId, 'direct', 'payment_received', actualLamports, paymentSig, {
-      chunkCount: actualChunkCount, blobSize: blobBuffer.length,
-      payer: payerWallet, solPrice, marginUsd, txCostLamports,
-    });
-
-    // Start inscription immediately
-    processInscription(jobId, blobBuffer, actualChunkCount, hash, directCallbackUrl, { payerWallet, paymentSig, direct: true, creator: payerWallet })
-      .then(() => {
-        const j = jobs.get(jobId);
-        if (j && j.status === 'complete') completeDirectJob(jobId);
-        // interrupted/failed jobs stay as 'writing' in DB for resume on next restart
-      })
-      .catch(err => {
-        console.error(`[Writer] Direct job ${jobId} uncaught: ${err.message}`);
-        failDirectJob(jobId);
-      })
-      .finally(() => drainQueue());
-
-    console.log(`[Writer] Direct job accepted: ${jobId} (${actualChunkCount} chunks, payer: ${payerWallet.slice(0, 8)}...)`);
-
-    reply.status(202);
-    return {
-      accepted: true, queued: false, jobId, chunkCount: actualChunkCount,
-      estimatedSeconds, activeJobs: active + 1, capacity: CAPACITY,
-    };
   });
 
   // ── POST /admin/mode — runtime inscription mode switch ──────────────
