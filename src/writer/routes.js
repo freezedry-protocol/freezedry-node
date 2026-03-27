@@ -612,8 +612,9 @@ export function registerWriterRoutes(app) {
     // If ANYTHING fails from here until saveDirectJob(), auto-refund the user.
     // Once the job is persisted, resumeDirectJobs() handles recovery on restart.
     try {
-      const balanceErr = await checkWalletBalance(actualChunkCount, reply);
-      if (balanceErr) throw new Error('NODE_BALANCE_INSUFFICIENT');
+      // Skip balance check for direct inscriptions — user already paid into the hot wallet.
+      // The payment covers TX fees. checkWalletBalance has a race condition where getBalance
+      // returns the pre-payment balance if the RPC node hasn't processed the payment TX yet.
 
       const jobId = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
